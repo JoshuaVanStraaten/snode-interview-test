@@ -545,25 +545,27 @@ source = '''
 
 # =================================
 # 5.1 File sink
-[sinks.file]
-type = "file"
-inputs = [
-        # "fortigate-main",
-        "fortigate-transform-auth",
-        "fortigate-transform-config",
-        "fortigate-transform-firewall",
-    ]
-path = "../outputs/output.log"
-encoding.codec = "json"
-
-# 5.2 Elasticsearch sink
-# [sinks.console]
+# [sinks.file]
+# type = "file"
 # inputs = [
+#         # "fortigate-main",
 #         "fortigate-transform-auth",
 #         "fortigate-transform-config",
 #         "fortigate-transform-firewall",
-#         ]
-# type = "elasticsearch"
-# endpoints = [ "http://ELASTIC_IP:ELASTIC_PORT" ] <- TODO: Update elasticsearch IP and port
-# bulk.index = "siem-{{siem_type}}-{{siem_subtype}}-{{siem_vendor}}-{{siem_application}}-%Y%m"
+#     ]
+# path = "../outputs/output.log"
+# encoding.codec = "json"
+
+# 5.2 Elasticsearch sink
+[sinks.elasticsearch]
+inputs = [
+        "fortigate-transform-auth",
+        "fortigate-transform-config",
+        "fortigate-transform-firewall",
+        ]
+type = "elasticsearch"
+endpoints = [ "http://elasticsearch:9200" ]
+bulk.index = "siem-{{siem_type}}-{{siem_subtype}}-{{siem_vendor}}-{{siem_application}}-%Y%m"
+compression = "gzip"
+healthcheck.enabled = true
 # =================================

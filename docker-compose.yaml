@@ -1,4 +1,23 @@
 services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m # Allocate memory to Elasticsearch
+    volumes:
+      - esdata:/usr/share/elasticsearch/data # Persist data
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    networks:
+      - logging_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200"]
+      interval: 20s
+      timeout: 15s
+      retries: 10
+
   vector:
     image: timberio/vector:latest-alpine
     volumes:
@@ -8,4 +27,27 @@ services:
     ports:
       - "8686:8686"
     command: ["--config", "/etc/vector/vector.toml"]
+    networks:
+      - logging_network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
 
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.14.0
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200 # Connect to Elasticsearch service name
+    ports:
+      - "5601:5601"
+    networks:
+      - logging_network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+volumes:
+  esdata: # Define the volume for Elasticsearch data persistence
+
+networks:
+  logging_network:
+    driver: bridge
