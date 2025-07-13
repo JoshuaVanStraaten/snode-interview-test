@@ -1,0 +1,11 @@
+services:
+  vector:
+    image: timberio/vector:latest-alpine
+    volumes:
+      - ./vector/vector.toml:/etc/vector/vector.toml:ro
+      - ./input.log:/input.log:ro
+      - ./outputs:/outputs
+    ports:
+      - "8686:8686"
+    command: ["--config", "/etc/vector/vector.toml"]
+

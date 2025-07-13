@@ -1,0 +1,569 @@
+# =================================
+# 1. Ingestion source
+[sources.fortigate-in]
+type = "file"
+include = [ "input.log" ]
+read_from = "beginning"
+ignore_checkpoints = true
+# =================================
+
+# =================================
+# 2. Log parsing and initial normalization
+[transforms.fortigate-transform-main]
+inputs = ["fortigate-in"]
+type = "remap"
+drop_on_error = true
+reroute_dropped = true
+source = '''
+    # 1. parse the raw log to root (".")
+    # hint: grok parsing + key_value parsing
+    parsed = parse_grok!(.message, "%{SYSLOGTIMESTAMP:sys_time} %{IP:ip} %{GREEDYDATA:kv_data}")
+    kv = parse_key_value!(parsed.kv_data, "=", " ")
+    . = merge(., kv)
+    .sys_time = parsed.sys_time
+    .ip = parsed.ip
+
+    # 2. @timestamp parsing
+    # Implement custom rounding to the nearest micro-second based on what is
+    # observed in the output logs:
+    ts_ns = to_int!(.eventtime)
+    timestamp_str = to_string(from_unix_timestamp!(ts_ns, unit: "nanoseconds"))
+
+    # Split the timestamp: e.g. "2023-06-28T11:49:01.738544645Z"
+    before_dot = slice!(timestamp_str, start: 0, end: 19)  # "2023-06-28T11:49:01"
+    nanoseconds_part = slice!(timestamp_str, start: 20, end: -1)  # "738544645"
+
+    # Get the last 2 digits and check if second-to-last > 0
+    last_two = slice!(nanoseconds_part, start: 7, end: 9)  # "45"
+    second_to_last = to_int!(slice!(last_two, start: 0, end: 1))  # 4
+
+    # Get the first 7 digits
+    first_seven = slice!(nanoseconds_part, start: 0, end: 7)  # "7385446"
+
+    # If second-to-last digit > 0, increment the last digit of first_seven
+    if second_to_last > 0 {
+        # Get the 7th digit (index 6) and increment it
+        seventh_digit = to_int!(slice!(first_seven, start: 6, end: 7))  # 6
+        incremented_digit = seventh_digit + 1
+
+        # Replace the 7th digit with incremented value
+        first_six = slice!(first_seven, start: 0, end: 6)  # "738544"
+        nanoseconds_modified = first_six + to_string(incremented_digit) + "00"  # "738544700"
+        # Recombine everything
+        .@timestamp = before_dot + "." + nanoseconds_modified + "Z"
+    } else {
+        # Keep as is, just add "00"
+        nanoseconds_modified = first_seven + "00"  # "738544600"
+        # Recombine everything
+        .@timestamp = before_dot + "." + nanoseconds_modified + "Z"
+    }
+
+    # 3. initial normalization and routing
+    if .type == "event" && contains(string!(.logdesc), "login") {
+        .siem_type = "auth"
+    } else if .type == "event" && contains(string!(.logdesc), "configured") {
+        .siem_type = "config"
+    } else if .type == "traffic" {
+        .siem_type = "firewall"
+    } else {
+        .siem_type = "unknown"
+    }
+
+    # Always set siem_subtype as "firewall"
+    .siem_subtype = "firewall"
+'''
+
+# =================================
+
+# =================================
+# 3. ROUTING
+[transforms.fortigate-type-split-route]
+inputs = [
+    "fortigate-transform-main",
+    ]
+type = "route"
+
+    [transforms.fortigate-type-split-route.route]
+    siem-fortigate-auth   = '.siem_type == "auth"'
+    siem-fortigate-config   = ' .siem_type == "config"'
+    siem-fortigate-firewall   = '.siem_type == "firewall"'
+# =================================
+
+# =================================
+# 4.1 Authentication log normalization
+[transforms.fortigate-transform-auth]
+inputs = ["fortigate-type-split-route.siem-fortigate-auth"]
+type = "remap"
+drop_on_error = true
+reroute_dropped = true
+source = '''
+    # Normalize authentication logs
+
+    # Renaming
+    .src = string!(.srcip)
+    .dst = string!(.dstip)
+    .user = string!(.user)
+
+    # For Auth logs, set the application to system
+    .application_name = "system"
+
+    # Create event details
+    .event_details = "ui=" + string!(.ui) + " | profile=" + string!(.profile)
+
+    # Enrich status
+    .status_text = upcase(string!(.status))
+    .status_type = if .level == "information" {
+        "INFO"
+    } else if .level == "notice" {
+        "NOTICE"
+    } else if .level == "warning" {
+        "WARN"
+    } else {
+        "UNKNOWN"
+    }
+    .status_description = string!(.type) + " | " + string!(.subtype) + " | " + string!(.msg)
+    .status_code = if string!(.status) == "success" {
+        0
+    } else {
+        -1
+    }
+    .status_reason = ""
+
+    # Set the action type based on the message
+    if contains(string!(.msg), "logged out") {
+        .action_type = "LOGOUT"
+    } else if contains(string!(.msg), "logged in") {
+        .action_type = "LOGIN"
+    } else {
+        .action_type = "OTHER"
+    }
+
+    # Create event description
+    .event_id_desc = "event | " + string!(.subtype) + " | " + string!(.msg)
+
+    .enrich_status = true
+    .siem = true
+    .siem_application = "fortigate"
+    .siem_vendor = "fortigate"
+    .siem_source = string!(.devname)
+    .test_route_flow = "auth | auth"
+    .test_subtype_code = "00"
+    .test_type_code = "01"
+
+    # Set empty or NULL fields
+    if !exists(.event_group) { .event_group = "" }
+    if !exists(.event_service) { .event_service = "" }
+    if !exists(.event_target) { .event_target = "" }
+    if !exists(.event_type) { .event_type = "" }
+    if !exists(.dstcountry) { .dstcountry = null }
+    if !exists(.dstintf) { .dstintf = null }
+    if !exists(.hostname) { .hostname = "" }
+    if !exists(.mac) { .mac = "" }
+    if !exists(.policytype) { .policytype = null }
+    if !exists(.resource_details) { .resource_details = "" }
+    if !exists(.service) { .service = null }
+    if !exists(.srcintf) { .srcintf = null }
+    if !exists(.srccountry) { .srccountry = null }
+    if !exists(.url) { .url = null }
+    if !exists(.src_country_code) { .src_country_code = "" }
+    .trust_status = string!(.profile)
+
+    # Set the event ID from the log ID
+    logid_str = string!(.logid)
+    .event_id = to_int!(slice!(logid_str, 5, 10))
+
+    # Set the severity based on the level
+    .level_map = {
+        "information": "HIGH",
+        "notice": "MEDIUM",
+        "warning": "LOW"
+    }
+    .severity = get(.level_map, .level) ?? "HIGH"
+
+    # === FINAL SCHEMA ENFORCEMENT ===
+    . = {
+        "@timestamp": .@timestamp,
+        "action": .action,
+        "action_type": .action_type,
+        "application_name": .application_name,
+        "dst": .dst,
+        "dstcountry": .dstcountry,
+        "dstintf": .dstintf,
+        "dstip": .dstip,
+        "enrich_status": .enrich_status,
+        "event_details": .event_details,
+        "event_group": .event_group,
+        "event_id": .event_id,
+        "event_id_desc": .event_id_desc,
+        "event_service": .event_service,
+        "event_target": .event_target,
+        "event_type": .event_type,
+        "hostname": .hostname,
+        "mac": .mac,
+        "policytype": .policytype,
+        "resource_details": .resource_details,
+        "service": .service,
+        "severity": .severity,
+        "siem": .siem,
+        "siem_application": .siem_application,
+        "siem_source": .siem_source,
+        "siem_subtype": .siem_subtype,
+        "siem_type": .siem_type,
+        "siem_vendor": .siem_vendor,
+        "src": .src,
+        "src_country_code": .src_country_code,
+        "srccountry": .srccountry,
+        "srcintf": .srcintf,
+        "srcip": .srcip,
+        "status_code": .status_code,
+        "status_description": .status_description,
+        "status_reason": .status_reason,
+        "status_text": .status_text,
+        "status_type": .status_type,
+        "test_route_flow": .test_route_flow,
+        "test_subtype_code": .test_subtype_code,
+        "test_type_code": .test_type_code,
+        "trust_status": .trust_status,
+        "url": .url,
+        "user": .user
+    }
+'''
+
+# 4.2 Configuration log normalization
+[transforms.fortigate-transform-config]
+inputs = ["fortigate-type-split-route.siem-fortigate-config"]
+type = "remap"
+drop_on_error = true
+reroute_dropped = true
+source = '''
+    # Normalize configuration logs
+
+    # Renaming
+    .action = string!(.msg)
+    .action_type = upcase(string(.action))
+    .src = string!(.user)
+    .dst = string!(.user)
+    .user = string!(.user)
+    .srcip = replace(replace(string!(.ui), "GUI(", ""), ")", "")
+
+    .application_name = ""
+
+    # Create event details
+    cfgpath_str = string(.cfgpath) ?? ""
+    cfgobj_str = string(.cfgobj) ?? ""
+    cfgattr_str = string(.cfgattr) ?? ""
+    .event_details = "cfgobj=" + cfgobj_str + " | ui=" + string!(.ui) + " | cfgpath=" + cfgpath_str
+    if cfgattr_str != "" {
+    .event_details = .event_details + " | cfgattr=" + cfgattr_str
+    }
+    .event_target = cfgobj_str
+    .file_path = cfgpath_str
+
+    # Enrich status
+    if !exists(.status) { .status_text = "SUCCESS" }
+    .status_type = if .level == "information" {
+        "INFO"
+    } else if .level == "notice" {
+        "NOTICE"
+    } else if .level == "warning" {
+        "WARN"
+    } else {
+        "UNKNOWN"
+    }
+    .status_description = string!(.type) + " | " + string!(.subtype) + " | " + string!(.msg)
+    .status_code = if string!(.status_text) == "SUCCESS" {
+        0
+    } else {
+        -1
+    }
+    .status_reason = string!(.logdesc)
+
+    # Create event description
+    .event_id_desc = "event | " + string!(.subtype) + " | " + string!(.msg) + " | " + string!(.logdesc)
+
+    .enrich_status = true
+    .siem = true
+    .siem_application = "fortigate"
+    .siem_vendor = "fortigate"
+    .siem_source = string!(.devname)
+    .test_route_flow = "auth | config"
+    .test_subtype_code = "00"
+    .test_type_code = "01"
+
+    # Set empty or NULL fields
+    if !exists(.ap) { .ap = null }
+    if !exists(.app) { .app = null }
+    if !exists(.event_group) { .event_group = "" }
+    if !exists(.event_service) { .event_service = "" }
+    if !exists(.event_target) { .event_target = "" }
+    if !exists(.event_type) { .event_type = "" }
+    if !exists(.dstcountry) { .dstcountry = null }
+    if !exists(.dstintf) { .dstintf = null }
+    if !exists(.hostname) { .hostname = "" }
+    if !exists(.mac) { .mac = "" }
+    if !exists(.policytype) { .policytype = null }
+    if !exists(.resource_details) { .resource_details = "" }
+    if !exists(.service) { .service = null }
+    if !exists(.srcintf) { .srcintf = null }
+    if !exists(.srccountry) { .srccountry = null }
+    if !exists(.srcport) { .srcport = null }
+    if !exists(.url) { .url = null }
+    if !exists(.src_country_code) { .src_country_code = "" }
+
+    # Set the event ID from the log ID
+    logid_str = string!(.logid)
+    .event_id = to_int!(slice!(logid_str, 5, 10))
+
+    # Set the severity based on the level
+    .level_map = {
+        "information": "HIGH",
+        "notice": "MEDIUM",
+        "warning": "LOW"
+    }
+    .severity = get(.level_map, .level) ?? "HIGH"
+
+    # === FINAL SCHEMA ENFORCEMENT ===
+    . = {
+        "@timestamp": .@timestamp,
+        "action": .action,
+        "action_type": .action_type,
+        "ap": null,
+        "app": null,
+        "application_name": .application_name,
+        "dst": .dst,
+        "dstcountry": .dstcountry,
+        "dstintf": .dstintf,
+        "dstip": .dstip,
+        "enrich_status": .enrich_status,
+        "event_details": .event_details,
+        "event_group": .event_group,
+        "event_id": .event_id,
+        "event_id_desc": .event_id_desc,
+        "event_service": .event_service,
+        "event_target": .event_target,
+        "file_path": .file_path,
+        "hostname": .hostname,
+        "mac": .mac,
+        "policytype": .policytype,
+        "service": .service,
+        "severity": .severity,
+        "siem": .siem,
+        "siem_application": .siem_application,
+        "siem_source": .siem_source,
+        "siem_subtype": .siem_subtype,
+        "siem_type": .siem_type,
+        "siem_vendor": .siem_vendor,
+        "src": .src,
+        "srccountry": .srccountry,
+        "srcintf": .srcintf,
+        "srcip": .srcip,
+        "srcport": .srcport,
+        "status_code": .status_code,
+        "status_description": .status_description,
+        "status_reason": .status_reason,
+        "status_text": .status_text,
+        "status_type": .status_type,
+        "test_route_flow": .test_route_flow,
+        "test_subtype_code": .test_subtype_code,
+        "test_type_code": .test_type_code,
+        "url": .url,
+        "user": .user
+        }
+
+'''
+
+# 4.3 Firewall log normalization
+[transforms.fortigate-transform-firewall]
+inputs = ["fortigate-type-split-route.siem-fortigate-firewall"]
+type = "remap"
+drop_on_error = true
+reroute_dropped = true
+source = '''
+    # Normalize firewall logs
+
+    # Set the action type
+    .action_type_map = {
+        "accept": "ACCEPT",
+        "server-rst": "RESET",
+        "dns": "CONNECTION",
+    }
+    .action_type = get(.action_type_map, [downcase(string!(.action))]) ?? "UNKNOWN"
+
+    # Renaming
+    .src = string!(.srcip)
+    .dst = string!(.dstip)
+    .srcip = string!(.srcip)
+
+    # Enrich status
+    if !exists(.status) { .status_text = "SUCCESS" }
+    .status_type = if .level == "information" {
+        "INFO"
+    } else if .level == "notice" {
+        "NOTICE"
+    } else if .level == "warning" {
+        "WARN"
+    } else {
+        "UNKNOWN"
+    }
+    .status_description = string!(.type) + " | " + string!(.subtype)
+    .status_code = if string!(.status_text) == "SUCCESS" {
+        0
+    } else {
+        -1
+    }
+    if !exists(.logdesc) { .status_reason = "" }
+
+    # Create event description
+    .event_id_desc = string!(.type) + " | " + string!(.subtype) + " | " + string!(.service)
+
+    # Create firewall details
+    policy_type_str = string(.policytype) ?? ""
+    .firewall_details = "devname=" + string!(.devname) + " | " + "vd=" + string!(.vd) + " | " + "policy=" + policy_type_str
+
+    .enrich_status = true
+    .siem = true
+    .siem_application = "fortigate"
+    .siem_vendor = "fortigate"
+    .siem_source = string!(.devname)
+    .test_route_flow = "firewall | firewall"
+    if downcase(string!(.subtype)) == "local" {
+        .test_subtype_code = "01"
+    } else if downcase(string!(.subtype)) == "forward" {
+        .test_subtype_code = "00"
+    }
+    .test_type_code = "00"
+
+    # Set the src and dst country codes
+    .dst_country_code = if downcase(string!(.dstcountry)) == "reserved" {
+        ""
+    } else {
+        string!(.dstcountry)
+    }
+    .src_country_code = if downcase(string!(.srccountry)) == "reserved" {
+        ""
+    } else {
+        string!(.srccountry)
+    }
+
+    # Set the mac
+    .mac = if exists(.srcmac) {
+        string!(.srcmac)
+    } else {
+        ""
+    }
+
+    # Set received and sent bytes
+    .rcvdbyte = if exists(.rcvdbyte) {
+        to_float!(.rcvdbyte)
+    } else {
+        to_int(0)
+    }
+    .sentbyte = if exists(.sentbyte) {
+        to_float!(.sentbyte)
+    } else {
+        to_int(0)
+    }
+
+    # Set empty or NULL fields
+    if !exists(.ap) { .ap = null }
+    if !exists(.application_name) { .application_name = "" }
+    if !exists(.domain) { .domain = "" }
+    if !exists(.dstintf) { .dstintf = "" }
+    if !exists(.dstmac) { .dstmac = "" }
+    if !exists(.event_details) { .event_details = "" }
+    if !exists(.firewall_details) { .firewall_details = "" }
+    if !exists(.hostname) { .hostname = null }
+    if !exists(.proto) { .proto = "" }
+    if !exists(.srcintf) { .srcintf = "" }
+    if !exists(.srcmac) { .srcmac = "" }
+    if !exists(.status_reason) { .status_reason = "" }
+    if !exists(.url) { .url = "" }
+    if !exists(.user) { .user = "" }
+
+    # Set the event ID from the log ID
+    logid_str = string!(.logid)
+    .test_event_id = to_int!(slice!(logid_str, 8, 10))
+
+    # Set the severity based on the level
+    .level_map = {
+        "information": "HIGH",
+        "notice": "MEDIUM",
+        "warning": "LOW"
+    }
+    .severity = get(.level_map, .level) ?? "HIGH"
+
+    # === FINAL SCHEMA ENFORCEMENT ===
+    . = {
+        "@timestamp": .@timestamp,
+        "action": .action,
+        "action_type": .action_type,
+        "ap": .ap,
+        "application_name": .application_name,
+        "domain": .domain,
+        "dst": .dst,
+        "dst_country_code": .dst_country_code,
+        "dstintf": .dstintf,
+        "dstip": .dstip,
+        "dstmac": .dstmac,
+        "dstport": .dstport,
+        "enrich_status": .enrich_status,
+        "event_details": .event_details,
+        "event_id_desc": .event_id_desc,
+        "firewall_details": .firewall_details,
+        "hostname": .hostname,
+        "mac": .mac,
+        "proto": .proto,
+        "rcvdbyte": .rcvdbyte,
+        "sentbyte": .sentbyte,
+        "severity": .severity,
+        "siem": .siem,
+        "siem_application": .siem_application,
+        "siem_source": .siem_source,
+        "siem_subtype": .siem_subtype,
+        "siem_type": .siem_type,
+        "siem_vendor": .siem_vendor,
+        "src": .src,
+        "src_country_code": .src_country_code,
+        "srcintf": .srcintf,
+        "srcip": .srcip,
+        "srcmac": .srcmac,
+        "srcport": .srcport,
+        "status_code": .status_code,
+        "status_description": .status_description,
+        "status_reason": .status_reason,
+        "status_text": .status_text,
+        "status_type": .status_type,
+        "test_event_id": .test_event_id,
+        "test_route_flow": .test_route_flow,
+        "test_subtype_code": .test_subtype_code,
+        "test_type_code": .test_type_code,
+        "url": .url,
+        "user": .user
+        }
+'''
+# =================================
+
+# =================================
+# 5.1 File sink
+[sinks.file]
+type = "file"
+inputs = [
+        # "fortigate-main",
+        "fortigate-transform-auth",
+        "fortigate-transform-config",
+        "fortigate-transform-firewall",
+    ]
+path = "../outputs/output.log"
+encoding.codec = "json"
+
+# 5.2 Elasticsearch sink
+# [sinks.console]
+# inputs = [
+#         "fortigate-transform-auth",
+#         "fortigate-transform-config",
+#         "fortigate-transform-firewall",
+#         ]
+# type = "elasticsearch"
+# endpoints = [ "http://ELASTIC_IP:ELASTIC_PORT" ] <- TODO: Update elasticsearch IP and port
+# bulk.index = "siem-{{siem_type}}-{{siem_subtype}}-{{siem_vendor}}-{{siem_application}}-%Y%m"
+# =================================
