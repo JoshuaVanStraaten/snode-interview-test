@@ -1,0 +1,4 @@
+pytest
+pytest-html
+elasticsearch==8.14.0
+deepdiff

@@ -13,10 +13,11 @@ services:
     networks:
       - logging_network
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200"]
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cat/health?h=st | grep -q 'green\\|yellow'"]
       interval: 20s
       timeout: 15s
       retries: 10
+      start_period: 30s
 
   vector:
     image: timberio/vector:latest-alpine
@@ -27,6 +28,8 @@ services:
     ports:
       - "8686:8686"
     command: ["--config", "/etc/vector/vector.toml"]
+    environment:
+      VECTOR_ES_HOST: http://elasticsearch:9200
     networks:
       - logging_network
     depends_on:
@@ -44,6 +47,30 @@ services:
     depends_on:
       elasticsearch:
         condition: service_healthy
+
+  pytest-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.pytest
+    container_name: pytest-runner
+    volumes:
+      - ./tests:/app/tests:ro
+      - ./tests/test_results:/app/test_results
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - logging_network
+    depends_on:
+      vector:
+        condition: service_started
+      elasticsearch:
+        condition: service_healthy
+    command: >
+      sh -c "echo 'Waiting for logs to be indexed...' && sleep 15 &&
+      pytest -W \"ignore:Module already imported:pytest.PytestWarning\"
+      -W \"always::pytest.PytestWarning\"
+      --html=/app/test_results/report.html --self-contained-html
+      /app/tests/test_logs.py" # NEW: Add --html option
 
 volumes:
   esdata: # Define the volume for Elasticsearch data persistence

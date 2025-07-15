@@ -564,7 +564,7 @@ inputs = [
         "fortigate-transform-firewall",
         ]
 type = "elasticsearch"
-endpoints = [ "http://elasticsearch:9200" ]
+endpoints = [ "${VECTOR_ES_HOST}" ]
 bulk.index = "siem-{{siem_type}}-{{siem_subtype}}-{{siem_vendor}}-{{siem_application}}-%Y%m"
 compression = "gzip"
 healthcheck.enabled = true
