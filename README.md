@@ -41,6 +41,14 @@ repo:
 docker-compose up --build
 ```
 
+> [!NOTE]
+> The `docker-compose` file is set up, such that when the logs are normalized
+> and within the Elasticsearch database, the pytest `test_logs.py` script is
+> automatically run to validate the normalized logs. Please refer to
+> [View the output logs](#View-the-output-logs) for information on how to view
+> the normalized logs and refer to [Test Results](#test-results) for
+> information on viewing the `test-report`.
+
 Vector is configured to sink the transformed logs to an Elasticsearch database
 with a Kibana supervisor. Ensure the following:
 
@@ -178,7 +186,8 @@ issues:
 ## Test Results
 
 The test results can be found within the `tests/test_results/` directory which
-will contain a `report.html` file.
+will contain a `report.html` file. An example report file is located within
+`tests/test_results/example/`.
 To view the logs, please open the report within a browser. It should look like:
 ![Test Report](images/test-report.png)
 
@@ -271,7 +280,7 @@ severity might be influenced by factors beyond just the `level` field.
 
 **Impact**: An inconsistent or unclear mapping for severity can lead to
 misprioritization of security events - this was initially seen during
-normalization. In a real-world scenario this cabn potentially obscure critical
+normalization. In a real-world scenario this can potentially obscure critical
 incidents or generate excessive noise from low-priority events.
 
 ##### Suggestions to address severity
