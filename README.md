@@ -20,6 +20,9 @@ docker-compose up --build
 Vector is configured to sink the transformed logs to an Elasticsearch database
 with a Kibana supervisor. Ensure the following:
 
+> [!IMPORTANT]
+> Elasticsearch may take a few moments to start up.
+
 **Verify Elasticsearch is running**:
 - Open your browser and navigate to [http://localhost:9200](http://localhost:9200).
   You should see a JSON response with cluster information such as:
@@ -46,14 +49,14 @@ with a Kibana supervisor. Ensure the following:
 - Open your browser and navigate to [http://localhost:5601](http://localhost:5601).
 
 ## View the output logs
-At the point, the output logs are within the Elasticsearch database. To view
+At this point, the output logs are within the Elasticsearch database. To view
 these log entries, this can be done via Kibana:
 
 * If it's your first time, click "Explore on my own" or similar.
 * In the left-hand navigation, go to **Stack Management** -> **Kibana**
 -> **Data Views**.
 * Click "Create data view" and fill in the fields as follows:
-    ![Create data view](/snode-interview-test/images/create-data-view.png)
+    ![Create data view](images/create-data-view.png)
 * Click "Save data view to Kibana".
 * Once created, go to **Analytics** -> **Discover** to view your normalized
   Fortigate logs.

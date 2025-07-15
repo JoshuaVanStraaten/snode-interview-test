@@ -130,9 +130,9 @@ source = '''
     .status_reason = ""
 
     # Set the action type based on the message
-    if contains(string!(.msg), "logged out") {
+    if contains(to_string!(.msg), "logged out") {
         .action_type = "LOGOUT"
-    } else if contains(string!(.msg), "logged in") {
+    } else if contains(to_string!(.msg), "logged in") {
         .action_type = "LOGIN"
     } else {
         .action_type = "OTHER"
@@ -173,12 +173,14 @@ source = '''
     .event_id = to_int!(slice!(logid_str, 5, 10))
 
     # Set the severity based on the level
-    .level_map = {
-        "information": "HIGH",
-        "notice": "MEDIUM",
-        "warning": "LOW"
+    .level_str = downcase(to_string!(.level))
+
+    if .level_str == "information" {
+        .severity = "HIGH"
+    } else {
+        .severity = "UNKNOWN"
+        log("Auth log with unexpected level: " + .level_str, level: "warn")
     }
-    .severity = get(.level_map, .level) ?? "HIGH"
 
     # === FINAL SCHEMA ENFORCEMENT ===
     . = {
@@ -239,8 +241,8 @@ source = '''
     # Normalize configuration logs
 
     # Renaming
+    .action_type = upcase(to_string!(.action))
     .action = string!(.msg)
-    .action_type = upcase(string(.action))
     .src = string!(.user)
     .dst = string!(.user)
     .user = string!(.user)
@@ -299,6 +301,7 @@ source = '''
     if !exists(.event_type) { .event_type = "" }
     if !exists(.dstcountry) { .dstcountry = null }
     if !exists(.dstintf) { .dstintf = null }
+    if !exists(.dstip) { .dstip = "" }
     if !exists(.hostname) { .hostname = "" }
     if !exists(.mac) { .mac = "" }
     if !exists(.policytype) { .policytype = null }
@@ -314,13 +317,24 @@ source = '''
     logid_str = string!(.logid)
     .event_id = to_int!(slice!(logid_str, 5, 10))
 
-    # Set the severity based on the level
-    .level_map = {
-        "information": "HIGH",
-        "notice": "MEDIUM",
-        "warning": "LOW"
+    # Set the severity based on the level and action
+    .level_str = downcase(to_string!(.level))
+    .action_str = downcase(to_string(.action))
+    .cfgpath_str = downcase(to_string!(.cfgpath))
+
+    if .level_str == "information" {
+        # Specific rule for policy edits being MEDIUM
+        if contains(.action_str, "edit") && .cfgpath_str == "firewall.policy" {
+            .severity = "MEDIUM"
+        } else {
+            # Other 'information' config events (like Add/Delete admin) are HIGH
+            .severity = "HIGH"
+        }
+    } else {
+        # Fallback for any unexpected levels in config logs
+        .severity = "UNKNOWN"
+        log("Config log with unexpected level: " + .level_str, level: "warn")
     }
-    .severity = get(.level_map, .level) ?? "HIGH"
 
     # === FINAL SCHEMA ENFORCEMENT ===
     . = {
@@ -418,7 +432,7 @@ source = '''
 
     # Create firewall details
     policy_type_str = string(.policytype) ?? ""
-    .firewall_details = "devname=" + string!(.devname) + " | " + "vd=" + string!(.vd) + " | " + "policy=" + policy_type_str
+    .firewall_details = "devName=" + string!(.devname) + " | " + "vd=" + string!(.vd) + " | " + "policy=" + policy_type_str
 
     .enrich_status = true
     .siem = true
@@ -485,12 +499,15 @@ source = '''
     .test_event_id = to_int!(slice!(logid_str, 8, 10))
 
     # Set the severity based on the level
-    .level_map = {
-        "information": "HIGH",
-        "notice": "MEDIUM",
-        "warning": "LOW"
+    .level_str = downcase(to_string!(.level))
+
+    if .level_str == "notice" || .level_str == "warning" {
+        .severity = "LOW"
+    } else {
+        # Fallback for any unexpected levels in firewall logs
+        .severity = "UNKNOWN"
+        log("Firewall log with unexpected level: " + .level_str, level: "warn")
     }
-    .severity = get(.level_map, .level) ?? "HIGH"
 
     # === FINAL SCHEMA ENFORCEMENT ===
     . = {
