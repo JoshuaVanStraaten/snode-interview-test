@@ -1,11 +1,12 @@
 # Snode-interview-test
 
 ## Overview
-Normalization of Fortigate firewall data (`input.log`). The firewall data
-consists of `authentication`, `configuration`and `firewall` logs which are
-normalized according to a respective schema. This repository also contains
-tests which are used to validate the normalization of the logs. The repository
-structure looks as follows:
+This repository focuses on the normalization of Fortigate firewall logs
+(`input.log`). The raw log data, encompassing authentication, configuration,
+and firewall events, is processed and transformed into a structured format
+according to a defined schema. Additionally, the repository includes automated
+tests designed to validate the accuracy and consistency of the log
+normalization process. The repository structure looks as follows:
 
 ```shell
 .
@@ -13,7 +14,10 @@ structure looks as follows:
 ├── README.md
 ├── docker-compose.yaml
 ├── images
-│   └── create-data-view.png
+│   ├── create-data-view.png
+│   ├── kibana-log-view.png
+│   ├── test-report.png
+│   └── test-stdout.png
 ├── input.log
 ├── outputs
 │   └── example
@@ -24,15 +28,20 @@ structure looks as follows:
 │   │   └── output.log
 │   ├── test_logs.py
 │   └── test_results
+│       ├── example
+│       │   └── report.html
 │       └── report.html
 └── vector
     └── vector.toml
 ```
 
 ## Run the application
-The application is wrapped in a docker container for convenience. Prior to
-running the application, ensure docker is installed. If docker is not installed,
-the following link to [install docker](https://docs.docker.com/engine/install/)
+The entire application stack is conveniently containerized and orchestrated
+using Docker Compose. Prior to running the application, ensure docker and
+docker-compose is installed. If docker is not installed, the following link to
+[install docker](https://docs.docker.com/engine/install/)
+can be followed. Additionally, the following link to
+[install docker-compose](https://docs.docker.com/compose/install/linux/#install-using-the-repository)
 can be followed. Once installed, simply run the following in the `root` of the
 repo:
 
@@ -90,8 +99,8 @@ these log entries, this can be done via Kibana:
 * Click "Create data view" and fill in the fields as follows:
     ![Create data view](images/create-data-view.png)
 * Click "Save data view to Kibana".
-* Once created, go to **Analytics** -> **Discover** to view your normalized
-  Fortigate logs.
+* Once created, in the left-hand navigation, go to **Analytics** ->
+**Discover** to view your normalized Fortigate logs.
 * If nothing displays, there should be a blue button **View all matches**, click
   the button and the logs will display.
 
@@ -131,7 +140,7 @@ mismatches, and discrepancies
 
 ### How It Works
 
-### Multi-Strategy Log Matching
+#### Multi-Strategy Log Matching
 
 When testing, it was identified that log order is not guaranteed and due to
 possible normalization errors (commonly seen with the `@timestamp`) in the
@@ -153,7 +162,7 @@ corresponding logs were compared.
 4. **Truncated Timestamp (Fallback)**
    - Simple timestamp truncation to 6 digits precision
 
-### Timestamp Handling
+#### Timestamp Handling
 
 Special attention is given to timestamp processing due to common precision
 issues:
@@ -311,9 +320,8 @@ agreed-upon standard.
 
 #### Handling of Null, Empty, and Missing Values
 
-**Observation**: The `EXCLUDE_PATHS_FOR_DEEPDIFF` list (e.g., ap, app,
-dstcountry, ...) within the tests consists of fields that frequently vary
-between null, empty strings (""), or complete absence.
+**Observation**: Certain fields such as `ap`, `app`, `dstcountry`, etc.
+frequently vary between null, empty strings (""), or complete absence.
 
 ##### Suggestions
 

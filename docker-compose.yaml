@@ -70,7 +70,7 @@ services:
       pytest -W \"ignore:Module already imported:pytest.PytestWarning\"
       -W \"always::pytest.PytestWarning\"
       --html=/app/test_results/report.html --self-contained-html
-      /app/tests/test_logs.py" # NEW: Add --html option
+      /app/tests/test_logs.py"
 
 volumes:
   esdata: # Define the volume for Elasticsearch data persistence
